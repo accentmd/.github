@@ -1,0 +1,54 @@
+name: Development task
+description: One pass, one pull request
+labels: ["type: development"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What to do
+      description: One or two sentences. The outcome, not the process.
+      placeholder: Category product list with pagination.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: >-
+        A checkable list. Slice vertically: not "the layout is done" but "it works
+        from the interface down to the data".
+      value: |
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+
+  - type: textarea
+    id: bounds
+    attributes:
+      label: Boundaries
+      description: >-
+        What this task does NOT include. This is the section most often forgotten,
+        and the one whose absence makes an agent do extra work.
+      placeholder: |
+        - Catalog reading only
+        - Filters are a separate task
+        - Data goes through the integration layer; never call the source directly
+    validations:
+      required: true
+
+  - type: input
+    id: modules
+    attributes:
+      label: Affected modules or areas
+    validations:
+      required: false
+
+  - type: input
+    id: plan
+    attributes:
+      label: Related plan
+      description: A link to the document or to the workstream's tracking issue
+    validations:
+      required: false

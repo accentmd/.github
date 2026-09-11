@@ -1,0 +1,40 @@
+name: External request
+description: Something is needed from someone outside the team
+labels: ["type: external request"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        After creating the issue, set its project status to **Waiting** and fill in
+        the **Waiting on** field. This is not set automatically: a template can add a
+        label, but not a project field value.
+
+  - type: input
+    id: who
+    attributes:
+      label: Who it is needed from
+      description: A name or department. The same value goes into the project's "Waiting on" field.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What exactly is needed, and in what form
+      description: The format matters. Write "a 2025 export as CSV", not "sales data".
+    validations:
+      required: true
+
+  - type: input
+    id: due
+    attributes:
+      label: Needed by
+    validations:
+      required: false
+
+  - type: textarea
+    id: blocked
+    attributes:
+      label: What is blocked without it
+    validations:
+      required: true
