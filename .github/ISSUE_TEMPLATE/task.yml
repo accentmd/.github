@@ -1,5 +1,6 @@
 name: Development task
 description: One pass, one pull request
+type: Task
 labels: ["type: development"]
 body:
   - type: textarea

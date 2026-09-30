@@ -1,0 +1,30 @@
+name: Epic
+description: A large piece of work that is split into tasks (sub-issues)
+type: Epic
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: One or two sentences on the outcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: A short checkable list. Tasks are added as sub-issues.
+      value: |
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+
+  - type: textarea
+    id: depends
+    attributes:
+      label: Depends on
+      description: Other epics or external requests. Also add them as "blocked by" links.
+    validations:
+      required: false

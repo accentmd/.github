@@ -1,5 +1,6 @@
 name: Data gap
 description: Something is unavailable or unreliable, and it blocks reporting
+type: Task
 labels: ["type: data"]
 body:
   - type: textarea

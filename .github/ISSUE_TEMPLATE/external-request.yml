@@ -1,6 +1,6 @@
 name: External request
 description: Something is needed from someone outside the team
-labels: ["type: external request"]
+type: External request
 body:
   - type: markdown
     attributes:
