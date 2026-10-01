@@ -1,0 +1,59 @@
+name: Rollback (reusable)
+# Switches a service on its host back to the previous successful release that the host still keeps.
+# It runs no migrations: services only add to their schemas, so the older release runs on the newer one.
+# Needs the same Environment secrets and variables as deploy.yml (SOPS_AGE_KEY is not used).
+on:
+  workflow_call:
+    inputs:
+      service:
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+      runs-on:
+        description: JSON runner labels. The runner must reach DEPLOY_HOST over the private network.
+        type: string
+        default: '["self-hosted"]'
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back ${{ inputs.service }} on ${{ inputs.environment }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.service }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      SERVICE: ${{ inputs.service }}
+      TARGET_ENV: ${{ inputs.environment }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_ACTORS: ${{ vars.DEPLOY_ACTORS }}
+    steps:
+      - name: Gate
+        run: |
+          [[ -n "$DEPLOY_HOST" ]] || { echo "::error::The ${TARGET_ENV} environment has no DEPLOY_HOST variable."; exit 1; }
+          actors=",${DEPLOY_ACTORS// /},"
+          [[ "$actors" == *",${GITHUB_ACTOR},"* ]] || { echo "::error::${GITHUB_ACTOR} is not in DEPLOY_ACTORS of ${TARGET_ENV}."; exit 1; }
+
+      - name: Roll back on the host
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
+        run: |
+          work=$(mktemp -d -p /dev/shm rollback.XXXXXX)
+          trap 'rm -rf "$work"' EXIT
+          (
+            umask 077
+            printf '%s\n' "$DEPLOY_SSH_KEY" > "$work/id"
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > "$work/known_hosts"
+          )
+          ssh -i "$work/id" -o IdentitiesOnly=yes -o UserKnownHostsFile="$work/known_hosts" -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "rollback ${SERVICE}"
+          ssh -i "$work/id" -o IdentitiesOnly=yes -o UserKnownHostsFile="$work/known_hosts" -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "status ${SERVICE}" >> "$GITHUB_STEP_SUMMARY"

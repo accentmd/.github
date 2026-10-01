@@ -1,0 +1,199 @@
+name: Deploy (reusable)
+# Deploys one release of a service to one environment. Generic: everything specific to a service or an
+# environment comes from the caller's deploy/deploy.yml and from the caller's GitHub Environment.
+#
+# Steps: gate → resolve and verify the image digests → decrypt the environment's env files (tmpfs) →
+# stream a bundle to the host's forced command → optional external acceptance check (rollback on failure).
+# The host verifies the signatures again, runs the service's deploy steps, watches an acceptance window and
+# rolls back on its own. The host side is not part of this repository.
+#
+# The caller's Environment (named by `environment`) must hold:
+#   secrets:   SOPS_AGE_KEY (decrypts deploy/env/<environment>.*.sops.env), DEPLOY_SSH_KEY
+#   variables: DEPLOY_HOST, SSH_KNOWN_HOSTS, DEPLOY_ACTORS (comma-separated GitHub logins)
+#   optional:  DEPLOY_USER (default "deploy"), ACCEPTANCE_URL (polled after the deploy)
+# The caller passes `secrets: inherit`: environment secrets can't be passed explicitly to a reusable workflow.
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: Service name; must equal `service` in deploy/deploy.yml and be allowed on the host.
+        type: string
+        required: true
+      environment:
+        description: GitHub Environment and deploy target, e.g. staging or production.
+        type: string
+        required: true
+      release:
+        description: Release tag to deploy (vMAJOR.MINOR.PATCH). It must be a published GitHub release.
+        type: string
+        required: true
+      runs-on:
+        description: JSON runner labels. The runner must reach DEPLOY_HOST over the private network.
+        type: string
+        default: '["self-hosted"]'
+      manual-only:
+        description: Refuse unless the run was started by workflow_dispatch.
+        type: boolean
+        default: true
+      signer-workflow:
+        description: Path of the workflow that signs the release images, in the caller repository.
+        type: string
+        default: .github/workflows/release.yml
+      acceptance-tries:
+        description: How many times to poll ACCEPTANCE_URL (10 s apart) before rolling back.
+        type: number
+        default: 18
+
+permissions:
+  contents: read
+
+env:
+  SOPS_VERSION: 3.13.3
+  SOPS_SHA256: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+  YQ_VERSION: 4.54.1
+  YQ_SHA256: 8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
+  OIDC_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }} ${{ inputs.release }} to ${{ inputs.environment }}
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.service }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SERVICE: ${{ inputs.service }}
+      TARGET_ENV: ${{ inputs.environment }}
+      RELEASE: ${{ inputs.release }}
+      MANUAL_ONLY: ${{ inputs.manual-only }}
+      SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+      ACCEPTANCE_TRIES: ${{ inputs.acceptance-tries }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      DEPLOY_ACTORS: ${{ vars.DEPLOY_ACTORS }}
+      ACCEPTANCE_URL: ${{ vars.ACCEPTANCE_URL }}
+    steps:
+      - name: Gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ -n "$DEPLOY_HOST" ]] || fail "The ${TARGET_ENV} environment has no DEPLOY_HOST variable."
+          [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Release '${RELEASE}' is not a vMAJOR.MINOR.PATCH tag."
+          [[ "$MANUAL_ONLY" != "true" || "$EVENT" == "workflow_dispatch" ]] || fail "Deploys to ${TARGET_ENV} start only from workflow_dispatch (got ${EVENT})."
+          actors=",${DEPLOY_ACTORS// /},"
+          [[ "$actors" == *",${GITHUB_ACTOR},"* ]] || fail "${GITHUB_ACTOR} is not in DEPLOY_ACTORS of ${TARGET_ENV}."
+          draft=$(gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft) \
+            || fail "${RELEASE} is not a GitHub release of ${GITHUB_REPOSITORY}."
+          [[ "$draft" == "false" ]] || fail "${RELEASE} is still a draft release."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release }}
+          sparse-checkout: deploy
+          persist-credentials: false
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Install sops and yq
+        run: |
+          bin="$RUNNER_TEMP/bin"; mkdir -p "$bin"
+          curl -fsSL -o "$bin/sops" "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          curl -fsSL -o "$bin/yq" "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
+          printf '%s  %s\n' "$SOPS_SHA256" "$bin/sops" "$YQ_SHA256" "$bin/yq" | sha256sum -c -
+          chmod 755 "$bin/sops" "$bin/yq"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Prepare a private work directory (tmpfs)
+        run: |
+          work=$(mktemp -d -p /dev/shm deploy.XXXXXX)
+          chmod 700 "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+          # Registry credentials go here too, so they are wiped with everything else.
+          echo "DOCKER_CONFIG=$work/docker" >> "$GITHUB_ENV"
+
+      - name: Resolve and verify the image digests
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          manifest=deploy/deploy.yml
+          [[ -f "$manifest" ]] || { echo "::error::${RELEASE} has no deploy/deploy.yml"; exit 1; }
+          [[ "$(yq -r .service "$manifest")" == "$SERVICE" ]] || { echo "::error::deploy.yml is not for ${SERVICE}"; exit 1; }
+          echo "$REGISTRY_TOKEN" | cosign login ghcr.io --username "$GITHUB_ACTOR" --password-stdin >/dev/null
+          identity="https://github.com/${GITHUB_REPOSITORY}/${SIGNER_WORKFLOW}@refs/tags/${RELEASE}"
+          : > "$WORK/release.env"
+          while IFS=$'\t' read -r var repository; do
+            ref="${repository}:${RELEASE#v}"
+            digest=$(cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$OIDC_ISSUER" \
+                       --output json "$ref" 2>/dev/null \
+                     | yq -p json -r '.[0].critical.image."docker-manifest-digest"') \
+              || { echo "::error::${ref} is not signed by ${identity}"; exit 1; }
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::No digest for ${ref}"; exit 1; }
+            echo "${var}=${repository}@${digest}" >> "$WORK/release.env"
+            echo "- \`${var}\` = \`${repository}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+          done < <(yq -r '(.images // {}) | to_entries | .[] | [.key, .value] | @tsv' "$manifest")
+          [[ -s "$WORK/release.env" ]] || echo "deploy.yml lists no images; the Compose files pin their own."
+
+      - name: Decrypt the environment's config
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          mkdir -m 700 "$WORK/config"
+          while read -r file; do
+            [[ "$file" =~ ^[a-z0-9-]+\.env$ ]] || { echo "::error::Bad config name '${file}'"; exit 1; }
+            src="deploy/env/${TARGET_ENV}.${file%.env}.sops.env"
+            [[ -f "$src" ]] || { echo "::error::Missing ${src}"; exit 1; }
+            (umask 077; sops decrypt --input-type dotenv --output-type dotenv "$src" > "$WORK/config/${file}")
+          done < <(yq -r '.config // [] | .[]' deploy/deploy.yml)
+
+      - name: Build the bundle
+        run: |
+          mkdir "$WORK/bundle"
+          cp -a deploy "$WORK/bundle/deploy"
+          rm -rf "$WORK/bundle/deploy/env"
+          mv "$WORK/config" "$WORK/release.env" "$WORK/bundle/"
+          tar -C "$WORK/bundle" -cf "$WORK/bundle.tar" deploy config release.env
+
+      - name: Deploy on the host
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
+        run: |
+          (
+            umask 077
+            printf '%s\n' "$DEPLOY_SSH_KEY" > "$WORK/id"
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > "$WORK/known_hosts"
+            printf '%s\n' "Host target" "  HostName ${DEPLOY_HOST}" "  User ${DEPLOY_USER}" "  IdentityFile $WORK/id" \
+              "  IdentitiesOnly yes" "  UserKnownHostsFile $WORK/known_hosts" "  StrictHostKeyChecking yes" \
+              "  BatchMode yes" "  ServerAliveInterval 30" > "$WORK/ssh_config"
+          )
+          # The host's forced command reads the request from SSH_ORIGINAL_COMMAND and the bundle from stdin.
+          ssh -F "$WORK/ssh_config" target "deploy ${SERVICE} ${TARGET_ENV} ${RELEASE}" < "$WORK/bundle.tar"
+
+      - name: External acceptance check
+        if: vars.ACCEPTANCE_URL != ''
+        run: |
+          for _ in $(seq "$ACCEPTANCE_TRIES"); do
+            if curl -fsS -o /dev/null --max-time 10 "$ACCEPTANCE_URL"; then
+              echo "${ACCEPTANCE_URL} answers."; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::${ACCEPTANCE_URL} did not answer; rolling back ${SERVICE}."
+          ssh -F "$WORK/ssh_config" target "rollback ${SERVICE}"
+          exit 1
+
+      - name: Summary
+        if: success()
+        run: echo "Deployed **${SERVICE} ${RELEASE}** to **${TARGET_ENV}**." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up
+        if: always()
+        run: |
+          if [[ -n "${WORK:-}" ]]; then rm -rf "$WORK"; fi

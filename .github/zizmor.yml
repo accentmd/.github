@@ -1,0 +1,7 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Our own reusable workflows: the templates start on a branch ref and Renovate pins them.
+        accentmd/*: ref-pin
+        "*": hash-pin
