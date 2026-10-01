@@ -1,0 +1,33 @@
+name: Deploy
+# Deploys a published release of this service through the organization's reusable deploy workflow.
+# Before the first run, see accentmd/infra docs/deploy-contract.md: deploy/deploy.yml, the staging and
+# production Environments (secrets SOPS_AGE_KEY, DEPLOY_SSH_KEY; variables DEPLOY_HOST, SSH_KNOWN_HOSTS,
+# DEPLOY_ACTORS), and the service allowed on its host.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+      release:
+        description: Release tag (vMAJOR.MINOR.PATCH)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Replace the ref with a full commit SHA; Renovate keeps it current.
+    uses: accentmd/.github/.github/workflows/deploy.yml@main
+    permissions:
+      contents: read
+      packages: read
+    with:
+      service: SERVICE_NAME
+      environment: ${{ inputs.environment }}
+      release: ${{ inputs.release }}
+    # Environment secrets reach a reusable workflow only this way; it reads only SOPS_AGE_KEY and DEPLOY_SSH_KEY.
+    secrets: inherit # zizmor: ignore[secrets-inherit]

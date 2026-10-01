@@ -1,0 +1,6 @@
+{
+  "name": "Accent service CI",
+  "description": "Verify on every pull request and on main, plus the shared secret scan.",
+  "iconName": "octicon check-circle",
+  "categories": ["Continuous integration"]
+}

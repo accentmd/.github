@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Accent defaults. Extend with \"github>accentmd/.github//renovate/default\" and add only what is specific to the repository.",
+  "extends": ["config:recommended", ":semanticCommits", "docker:pinDigests", "helpers:pinGitHubActionDigests"],
+  "timezone": "Europe/Chisinau",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "chore(deps): ",
+  "customManagers": [
+    {
+      "description": "Container images pinned in justfiles and workflows as \"<image>:<tag>@sha256:<digest>\".",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)justfile$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "(?:docker\\.io/)?(?<depName>(?:ghcr\\.io/)?[a-z0-9./-]+):(?<currentValue>v?[0-9][^@\\s\"]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Every third-party action and reusable workflow is pinned to a full SHA, in one weekly pull request.",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  }
+}

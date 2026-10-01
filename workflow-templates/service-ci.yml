@@ -1,0 +1,36 @@
+name: CI
+# The starting point for a service repository's CI. Replace the verify step with the repository's own
+# command (`just verify`, `pnpm verify`, …). Private repositories run on the self-hosted runners once they
+# exist; until then, keep ubuntu-24.04.
+on:
+  pull_request:
+  push:
+    branches: [$default-branch]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: 1.58.0
+      - name: Verify
+        run: just verify
+
+  secrets:
+    name: Secret scan
+    # Replace the ref with a full commit SHA; Renovate keeps it current.
+    uses: accentmd/.github/.github/workflows/secret-scan.yml@main

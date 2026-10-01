@@ -1,0 +1,6 @@
+{
+  "name": "Accent service deploy",
+  "description": "Deploy a published release to staging or production through the reusable deploy workflow.",
+  "iconName": "octicon rocket",
+  "categories": ["Deployment"]
+}
